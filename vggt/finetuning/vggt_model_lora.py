@@ -38,7 +38,7 @@ class LoRAVGGT(VGGT):
 
     def replace_aggregator_patch_embed(self):
         for idx, block in enumerate(self.aggregator.patch_embed.blocks):
-            if hasattr(self.args, "lora_aggr_patch_embed_qkv") and self.args.lora_aggr_patch_embed_qkv > 0:
+            if hasattr(self.args, "lora_rank_aggr_patch_embed_qkv") and self.args.lora_rank_aggr_patch_embed_qkv > 0:
                 lora_qkv = lora.Linear(
                     block.attn.qkv.in_features, block.attn.qkv.out_features, 
                     r=self.args.lora_rank_aggr_patch_embed_qkv, lora_alpha=self.args.lora_alpha_aggr_patch_embed_qkv
@@ -49,7 +49,7 @@ class LoRAVGGT(VGGT):
 
                 setattr(self.aggregator.patch_embed.blocks[idx].attn, "qkv", lora_qkv)
 
-            if hasattr(self.args, "lora_aggr_patch_embed_proj") and self.args.lora_aggr_patch_embed_proj > 0:
+            if hasattr(self.args, "lora_rank_aggr_patch_embed_proj") and self.args.lora_rank_aggr_patch_embed_proj > 0:
                 lora_proj = lora.Linear(
                     block.attn.proj.in_features, block.attn.proj.out_features, 
                     r=self.args.lora_rank_aggr_patch_embed_proj, lora_alpha=self.args.lora_alpha_aggr_patch_embed_proj
@@ -60,7 +60,7 @@ class LoRAVGGT(VGGT):
 
                 setattr(self.aggregator.patch_embed.blocks[idx].attn, "proj", lora_proj)
 
-            if hasattr(self.args, "lora_aggr_patch_embed_mlp") and self.args.lora_aggr_patch_embed_mlp > 0:
+            if hasattr(self.args, "lora_rank_aggr_patch_embed_mlp") and self.args.lora_rank_aggr_patch_embed_mlp > 0:
                 for fc in ["fc1", "fc2"]:
                     mlp_layer = getattr(block.mlp, fc)
                     lora_mlp_fc = lora.Linear(
@@ -75,7 +75,7 @@ class LoRAVGGT(VGGT):
     
     def replace_aggregator_frame_blocks(self):
         for idx, block in enumerate(self.aggregator.frame_blocks):
-            if hasattr(self.args, "lora_aggr_frame_blocks_qkv") and self.args.lora_aggr_frame_blocks_qkv > 0:
+            if hasattr(self.args, "lora_rank_aggr_frame_blocks_qkv") and self.args.lora_rank_aggr_frame_blocks_qkv > 0:
                 lora_qkv = lora.Linear(
                     block.attn.qkv.in_features, block.attn.qkv.out_features, 
                     r=self.args.lora_rank_aggr_frame_blocks_qkv, lora_alpha=self.args.lora_alpha_aggr_frame_blocks_qkv
@@ -86,7 +86,7 @@ class LoRAVGGT(VGGT):
 
                 setattr(self.aggregator.frame_blocks[idx].attn, "qkv", lora_qkv)
 
-            if hasattr(self.args, "lora_aggr_frame_blocks_proj") and self.args.lora_aggr_frame_blocks_proj > 0:
+            if hasattr(self.args, "lora_rank_aggr_frame_blocks_proj") and self.args.lora_rank_aggr_frame_blocks_proj > 0:
                 lora_proj = lora.Linear(
                     block.attn.proj.in_features, block.attn.proj.out_features, 
                     r=self.args.lora_rank_aggr_frame_blocks_proj, lora_alpha=self.args.lora_alpha_aggr_frame_blocks_proj
@@ -97,7 +97,7 @@ class LoRAVGGT(VGGT):
 
                 setattr(self.aggregator.frame_blocks[idx].attn, "proj", lora_proj)
 
-            if hasattr(self.args, "lora_aggr_frame_blocks_mlp") and self.args.lora_aggr_frame_blocks_mlp > 0:
+            if hasattr(self.args, "lora_rank_aggr_frame_blocks_mlp") and self.args.lora_rank_aggr_frame_blocks_mlp > 0:
                 for fc in ["fc1", "fc2"]:
                     mlp_layer = getattr(block.mlp, fc)
                     lora_mlp_fc = lora.Linear(
@@ -112,7 +112,7 @@ class LoRAVGGT(VGGT):
     
     def replace_aggregator_global_blocks(self):
         for idx, block in enumerate(self.aggregator.global_blocks):
-            if hasattr(self.args, "lora_aggr_global_blocks_qkv") and self.args.lora_aggr_global_blocks_qkv > 0:
+            if hasattr(self.args, "lora_rank_aggr_global_blocks_qkv") and self.args.lora_rank_aggr_global_blocks_qkv > 0:
                 lora_qkv = lora.Linear(
                     block.attn.qkv.in_features, block.attn.qkv.out_features, 
                     r=self.args.lora_rank_aggr_global_blocks_qkv, lora_alpha=self.args.lora_alpha_aggr_global_blocks_qkv
@@ -123,7 +123,7 @@ class LoRAVGGT(VGGT):
 
                 setattr(self.aggregator.global_blocks[idx].attn, "qkv", lora_qkv)
 
-            if hasattr(self.args, "lora_aggr_global_blocks_proj") and self.args.lora_aggr_global_blocks_proj > 0:
+            if hasattr(self.args, "lora_rank_aggr_global_blocks_proj") and self.args.lora_rank_aggr_global_blocks_proj > 0:
                 lora_proj = lora.Linear(
                     block.attn.proj.in_features, block.attn.proj.out_features, 
                     r=self.args.lora_rank_aggr_global_blocks_proj, lora_alpha=self.args.lora_alpha_aggr_global_blocks_proj
@@ -134,7 +134,7 @@ class LoRAVGGT(VGGT):
 
                 setattr(self.aggregator.global_blocks[idx].attn, "proj", lora_proj)
 
-            if hasattr(self.args, "lora_aggr_global_blocks_mlp") and self.args.lora_aggr_global_blocks_mlp > 0:
+            if hasattr(self.args, "lora_rank_aggr_global_blocks_mlp") and self.args.lora_rank_aggr_global_blocks_mlp > 0:
                 for fc in ["fc1", "fc2"]:
                     mlp_layer = getattr(block.mlp, fc)
                     lora_mlp_fc = lora.Linear(
