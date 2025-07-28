@@ -149,3 +149,5 @@ skyseg.onnx
 *.egg-info
 .vscode/
 test.py
+
+vggt_commands_*.sh
