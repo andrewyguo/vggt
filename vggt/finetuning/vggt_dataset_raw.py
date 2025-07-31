@@ -26,6 +26,7 @@ class VGGTDatasetRaw(Dataset):
                  subsample=None,
                  distortion_coefficents=None,
                  use_distorted=False,
+                 manual_scaling_factor=None,
                  ):
         self.root_path = root_path 
 
@@ -36,7 +37,7 @@ class VGGTDatasetRaw(Dataset):
         self.use_clean_jpg = use_clean_jpg
         self.use_distorted = use_distorted
 
-        if use_distorted and distortion_coefficents is not None:
+        if self.use_distorted and distortion_coefficents is not None:
             with open(distortion_coefficents, 'r') as f:
                 intrinsics = json.load(f)
             fx, fy = intrinsics["fl_x"], intrinsics["fl_y"]
@@ -51,7 +52,7 @@ class VGGTDatasetRaw(Dataset):
                                   [0, 0, 1]], dtype=np.float32)
             self.dist_coeffs = np.array([k1, k2, p1, p2], dtype=np.float32)  
 
-        elif distortion_coefficents is None:
+        elif self.use_distorted and distortion_coefficents is None:
             raise ValueError("If use_distorted is True, distortion_coefficents must be provided.")
 
         self.ds_factor = ds_factor 
@@ -60,17 +61,11 @@ class VGGTDatasetRaw(Dataset):
         self.subsample = subsample
 
         self.scaling_constant_range = scaling_constant_range
+        self.manual_scaling_factor = manual_scaling_factor
 
         self.sequence_range = sequence_range
         self.sampling_rate = sampling_rate
 
-        self._setup_scenes()
-
-        self.save_dir = save_dir
-        if vis_every is None:
-            self.vis_every = len(self.clean_npy_paths) // 5
-        else:
-            self.vis_every = vis_every
         # Noise calibration parameters 
         self.B_m1 = np.array([512, 512, 512]).reshape(1, 1, 3)   # Black level for capture 1
         self.B_m2 = np.array([1024, 1024, 1024]).reshape(1, 1, 3)   # Black level for capture 2
@@ -80,6 +75,14 @@ class VGGTDatasetRaw(Dataset):
         self.raw_bit_depth = 14
         self.srgb_bit_depth = 8
         self.count = 0
+
+        self._setup_scenes()
+
+        self.save_dir = save_dir
+        if vis_every is None:
+            self.vis_every = len(self.clean_npy_paths) // 5
+        else:
+            self.vis_every = vis_every
 
     def _setup_scenes(self):
         scenes = sorted(os.listdir(self.clean_npy_dir))
@@ -161,7 +164,10 @@ class VGGTDatasetRaw(Dataset):
     def __getitem__(self, idx):
         # pick start frame & sequence length
         start_path = self.clean_npy_paths[idx]
-        sf = self.scene_scaling_info[os.path.dirname(start_path)]["scaling_factor"]
+        if self.manual_scaling_factor is not None:
+            sf = self.manual_scaling_factor
+        else:
+            sf = self.scene_scaling_info[os.path.dirname(start_path)]["scaling_factor"]
         T = random.randint(*self.sequence_range)
         seq_paths = self.get_sequence_paths(start_path, T)
 

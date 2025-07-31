@@ -6,6 +6,7 @@
 
 import random
 import numpy as np
+import imageio 
 import glob
 import math 
 import datetime 
@@ -108,7 +109,7 @@ def demo_fn(args):
     output_dir = Path(os.path.join(args.output_dir, now.strftime('%m-%d-%H-%M-%S')))
     output_dir.mkdir(parents=True, exist_ok=True)
     with open(output_dir / "args.json", "w") as f:
-        json.dump(vars(args), f)
+        json.dump(vars(args), f, indent=4)
 
     # Set seed for reproducibility
     np.random.seed(args.seed)
@@ -163,6 +164,28 @@ def demo_fn(args):
         images, original_coords = load_and_preprocess_npy_square(image_path_list, target_size=img_load_resolution)
     base_image_path_list = [os.path.basename(path) for path in image_path_list]
 
+    # save one of the images to output_dir / debug for reference 
+
+    os.makedirs(output_dir / "debug", exist_ok=True)
+
+    test_idxs = [20]
+    test_scales = [1.0, 10.0]
+
+    for idx in test_idxs:
+        if idx >= len(images):
+            print(f"Index {idx} is out of range for images with length {len(images)}")
+            continue
+
+        for scale in test_scales:
+        # save test_image after normalizing to [0, 255]
+            test_image = images[idx].cpu().numpy().transpose(1, 2, 0)
+            print("mean min max of test_image:", np.mean(test_image), np.min(test_image), np.max(test_image))
+            test_image = (np.clip((test_image * scale), 0, 1) * 255).astype(np.uint8)
+            print("mean min max of test_image after scaling:", np.mean(test_image), np.min(test_image), np.max(test_image))
+            test_image_path = output_dir / "debug" / f"test_image_{str(idx).zfill(6)}_s{str(int(scale)).zfill(3)}.png"
+
+            imageio.imwrite(test_image_path, test_image)
+
     images = images.to(device)
     original_coords = original_coords.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
@@ -172,7 +195,8 @@ def demo_fn(args):
     extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
 
-    if not args.no_use_ba:
+    use_ba = not args.no_use_ba
+    if use_ba:
         image_size = np.array(images.shape[-2:])
         scale = img_load_resolution / vggt_fixed_resolution
         shared_camera = args.shared_camera
@@ -200,6 +224,8 @@ def demo_fn(args):
 
         # rescale the intrinsic matrix from 518 to 1024
         intrinsic[:, :2, :] *= scale
+
+        # import IPython; IPython.embed()  # for debugging
         track_mask = pred_vis_scores > args.vis_thresh
 
         # TODO: radial distortion, iterative BA, masks
@@ -273,22 +299,22 @@ def demo_fn(args):
         shared_camera=shared_camera,
     )
 
-    print(f"Saving reconstruction to {args.output_dir}/sparse")
-    sparse_reconstruction_dir = os.path.join(args.output_dir, "sparse")
+    print(f"Saving reconstruction to {output_dir}/sparse")
+    sparse_reconstruction_dir = output_dir / "sparse"
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
 
     # Save point cloud for fast visualization
-    trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.output_dir, "sparse/points.ply"))
+    trimesh.PointCloud(points_3d, colors=points_rgb).export(output_dir / "sparse/points.ply")
 
-    txt_model_dir = sparse_reconstruction_dir.replace("sparse", "txt")
+    txt_model_dir = sparse_reconstruction_dir.parent /  "txt"
     os.makedirs(txt_model_dir, exist_ok=True)
     recon = pycolmap.Reconstruction(sparse_reconstruction_dir)
 
     # 4) Export as text
     recon.write_text(txt_model_dir)
 
-    colmap_to_nerf_json(txt_model_dir, os.path.join(args.output_dir, "transforms_vggt.json"), image_folder=args.image_dir)
+    colmap_to_nerf_json(txt_model_dir, output_dir / "transforms_vggt.json", image_folder=args.image_dir)
 
     return True
 
@@ -469,11 +495,12 @@ def colmap_to_nerf_json(text_folder, out_path, image_folder):
         up = np.zeros(3)
         for line in f:
             line = line.strip()
-            if line[0] == "#":
+            if len(line) == 0 or line[0] == "#":
                 continue
             i = i + 1
 
-            if  i % 2 == 1:
+            # if  i % 2 == 1:
+            if line.endswith(".jpg") or line.endswith(".png") or line.endswith(".npy"): # this means that it contains the pose information 
                 elems=line.split(" ") # 1-4 is quat, 5-7 is trans, 9ff is filename (9, if filename contains no spaces)
                 #name = str(PurePosixPath(Path(IMAGE_FOLDER, elems[9])))
                 # why is this requireing a relitive path while using ^
@@ -491,6 +518,7 @@ def colmap_to_nerf_json(text_folder, out_path, image_folder):
                 frame = {"file_path":name,"transform_matrix": c2w}
                 if len(cameras) != 1:
                     frame.update(cameras[int(elems[8])])
+                
                 out["frames"].append(frame)
     nframes = len(out["frames"])
 
@@ -502,13 +530,15 @@ def colmap_to_nerf_json(text_folder, out_path, image_folder):
     ])
 
     for f in out["frames"]:
-        f["transform_matrix"] = np.matmul(f["transform_matrix"], flip_mat) # flip cameras (it just works)
+        f["transform_matrix"] = np.matmul(f["transform_matrix"], flip_mat).tolist() # flip cameras (it just works)
 
-    for f in out["frames"]:
-        f["transform_matrix"] = f["transform_matrix"].tolist()
+    # for f in out["frames"]:
+    #     f["transform_matrix"] = f["transform_matrix"].tolist()
 
     print(nframes,"frames")
     print(f"writing {out_path}")
+    # sort frames by image name
+    out["frames"] = sorted(out["frames"], key=lambda x: x["file_path"])
     with open(out_path, "w") as outfile:
         json.dump(out, outfile, indent=2)
 

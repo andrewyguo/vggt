@@ -4,6 +4,7 @@ import os
 
 import torch 
 import loralib as lora 
+from pathlib import Path
 
 from vggt.models.vggt import VGGT
 
@@ -26,7 +27,8 @@ class LoRAVGGT(VGGT):
         torch.save(lora.lora_state_dict(self), checkpoint_path)
 
     def load_pretrained_lora(self, checkpoint_path):
-        lora_metadata_path = os.path.join(os.path.dirname(checkpoint_path), "lora_finetuning_args.json")
+        ck_path = Path(checkpoint_path)
+        lora_metadata_path = ck_path.parent.parent / "lora_finetuning_args.json"
         with open(lora_metadata_path, "r") as f:
             metadata = json.load(f)
         

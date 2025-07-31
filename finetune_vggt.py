@@ -15,6 +15,7 @@ import torch.distributed as dist
 from vggt.models.vggt import VGGT
 from vggt.finetuning.vggt_model_lora import LoRAVGGT
 from vggt.finetuning.vggt_dataset_raw import VGGTDatasetRaw
+from vggt.utils.load_npy import visualize_npy_sequence
 
 if __name__=="__main__":
 
@@ -23,6 +24,7 @@ if __name__=="__main__":
     parser.add_argument("--num_epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=12)
     parser.add_argument("-o", "--save_dir", type=str, required=True)
+    parser.add_argument("--save_every_epoch", type=float, default=-1)
     parser.add_argument("--train_image_root", type=str, default="/scratch/ondemand28/ykguo/data_lowlight_new/processed_A1_0405/")
     parser.add_argument("--resume_weights", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
@@ -30,6 +32,7 @@ if __name__=="__main__":
     parser.add_argument("--use_clean_jpg", action="store_true", help="Use clean jpg instead of clean npy for training")
     # Losses - determines scaling 
     parser.add_argument("--loss_scale_aggregator_tokens", type=float, default=1)
+    parser.add_argument("--loss_scale_aggregator_tokens_clean", type=float, default=0.2)
     # LoRA params 
     ### Aggregator 
     parser.add_argument("--lora_rank_aggr_patch_embed_qkv", type=int, default=16)
@@ -43,7 +46,7 @@ if __name__=="__main__":
     parser.add_argument("--lora_rank_aggr_frame_blocks_proj", type=int, default=16)
     parser.add_argument("--lora_alpha_aggr_frame_blocks_proj", type=int, default=16)
     parser.add_argument("--lora_rank_aggr_frame_blocks_mlp", type=int, default=16)
-    parser.add_argument("--lora_alpha_aggr_patch_embed_mlp", type=int, default=16)
+    parser.add_argument("--lora_alpha_aggr_frame_blocks_mlp", type=int, default=16)
     parser.add_argument("--lora_rank_aggr_global_blocks_qkv", type=int, default=16)
     parser.add_argument("--lora_alpha_aggr_global_blocks_qkv", type=int, default=16)
     parser.add_argument("--lora_rank_aggr_global_blocks_proj", type=int, default=16)
@@ -52,7 +55,8 @@ if __name__=="__main__":
     parser.add_argument("--lora_alpha_aggr_global_blocks_mlp", type=int, default=16)
     ### 
     parser.add_argument("--scaling_constant_range", type=float, nargs=2, default=(18.0, 20.0))
-    parser.add_argument("--sequence_length_range", type=int, nargs=2, default=(10, 15))
+    parser.add_argument("--manual_scaling_factor", type=float, default=None, help="If provided, use this scaling factor for all sequences.")
+    parser.add_argument("--sequence_range", type=int, nargs=2, default=(10, 14))
     parser.add_argument("--sampling_rate", type=float, default=3) 
     parser.add_argument("--noise_alphas", type=float, nargs=3, default=[5.96, 3.13, 6.81])
     parser.add_argument("--noise_betas", type=float, nargs=3, default=[-3669, -1991, -4189])
@@ -88,30 +92,45 @@ if __name__=="__main__":
     # Ensure all processes wait until rank 0 has created directories.
     dist.barrier()
 
-    # TODO: configure this dataset init properly 
     # train 
     train_dataset = VGGTDatasetRaw(
         root_path=args.train_image_root,
         scaling_constant_range=args.scaling_constant_range,
+        manual_scaling_factor=args.manual_scaling_factor,
+        sequence_range=args.sequence_range,
         sampling_rate=args.sampling_rate,
+        use_clean_jpg=args.use_clean_jpg,
+        use_distorted=args.use_distorted,
+        noise_alphas=args.noise_alphas,
+        noise_betas=args.noise_betas,
+        distortion_coefficents=args.distortion_coefficents,
     )
 
     # ============================
     # DDP: Use DistributedSampler so each process gets a subset of the data.
     train_sampler = DistributedSampler(train_dataset)         
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler, shuffle=False)  # [Modified]
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        sampler=train_sampler,
+        shuffle=False,
+        num_workers=8,  # Adjust based on your system
+        pin_memory=True,
+    )  # [Modified]
     # ============================
 
     steps_per_epoch = len(train_loader)
     scheduler_step = int(steps_per_epoch / 10)
+    save_every = int(steps_per_epoch * args.save_every_epoch) 
 
-    original_model = VGGT().to(device)
+    original_model = VGGT()
     original_model.load_state_dict(torch.load("downloads/model.pt", map_location=device))
+    original_model = original_model.to(device)
 
     for param in original_model.parameters():    
         param.requires_grad = False
     
-    model = LoRAVGGT().to(device)
+    model = LoRAVGGT()
     model.load_state_dict(torch.load("downloads/model.pt", map_location=device))
 
     if args.resume_weights and os.path.exists(args.resume_weights):
@@ -123,6 +142,7 @@ if __name__=="__main__":
         starting_epoch = 0 
         step = -1 
 
+    model = model.to(device)
     # ============================
     # DDP: Wrap the model with DistributedDataParallel.
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)  
@@ -140,7 +160,7 @@ if __name__=="__main__":
                 print(f"{name}: {param.shape}")
         print(f"===\nTotal number of trainable params: {len(trainable_params)}\n===")
 
-        print(f"steps per epoch: {steps_per_epoch} | scheduler_step: {scheduler_step}")
+        print(f"steps per epoch: {steps_per_epoch} | scheduler_step: {scheduler_step} | save_every: {save_every}")
 
     optimizer = optim.Adam(trainable_params, lr=args.lr_starting) # learning rate decay? 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=args.lr_gamma)
@@ -172,22 +192,55 @@ if __name__=="__main__":
             loss = torch.tensor(0.0).to(device)
             loss_string = ""
 
-            clean_aggregated_tokens = original_model.aggregator(clean_sequence)
-            noisy_aggregated_tokens = model.module.aggregator(noisy_sequence)
+            clean_sequence = clean_sequence.to(device, non_blocking=True)
+            noisy_sequence = noisy_sequence.to(device, non_blocking=True)
+
+            # if step % 50 == 0 and step < 200 and rank == 0:
+            #     # Visualize the first batch of sequences
+            #     visualize_npy_sequence(clean_sequence, noisy_sequence, figs_dir, step)
+
+
+            clean_original_aggregated_tokens, _ = original_model.aggregator(clean_sequence)
+            noisy_aggregated_tokens, _ = model.module.aggregator(noisy_sequence)
 
             if supervise_clean: 
-                print(f"Warning, clean supervision not yet implemented. ")
+                clean_aggregated_tokens, _ = model.module.aggregator(clean_sequence)
 
             if "aggr_tokens_last" in args.losses:
-                aggr_tokens_last_loss = ((clean_aggregated_tokens[-1] - noisy_aggregated_tokens[-1])**2).mean()
+                aggr_tokens_last_loss = ((clean_original_aggregated_tokens[-1] - noisy_aggregated_tokens[-1])**2).mean()
 
                 aggr_tokens_last_loss *= args.loss_scale_aggregator_tokens
                 loss += aggr_tokens_last_loss
 
-                loss_string += f"AgT: {aggr_tokens_last_loss.item():.2f} "
+                loss_string += f"AgT: {aggr_tokens_last_loss.item():.2f} | "
                 if writer is not None:
                     writer.add_scalar("Loss/aggr_tokens_last_loss", aggr_tokens_last_loss.item(), step)
 
+            if "aggr_tokens_all" in args.losses:
+                aggr_tokens_all_loss = torch.tensor(0.0).to(device)
+                for clean_token, noisy_token in zip(clean_original_aggregated_tokens, noisy_aggregated_tokens):
+                    aggr_tokens_all_loss += ((clean_token - noisy_token)**2).mean()
+                aggr_tokens_all_loss /= len(clean_original_aggregated_tokens)
+
+                aggr_tokens_all_loss *= args.loss_scale_aggregator_tokens
+                loss += aggr_tokens_all_loss
+
+                loss_string += f"AgA: {aggr_tokens_all_loss.item():.2f} | "
+                if writer is not None:
+                    writer.add_scalar("Loss/aggr_tokens_all_loss", aggr_tokens_all_loss.item(), step)
+
+            if "aggr_tokens_all_clean" in args.losses and supervise_clean:
+                aggr_tokens_all_clean_loss = torch.tensor(0.0).to(device)
+                for clean_token, noisy_token in zip(clean_aggregated_tokens, noisy_aggregated_tokens):
+                    aggr_tokens_all_clean_loss += ((clean_token - noisy_token)**2).mean()
+                aggr_tokens_all_clean_loss /= len(clean_aggregated_tokens)
+
+                aggr_tokens_all_clean_loss *= args.loss_scale_aggregator_tokens_clean
+                loss += aggr_tokens_all_clean_loss
+
+                loss_string += f"AgAC: {aggr_tokens_all_clean_loss.item():.2f} | "
+                if writer is not None:
+                    writer.add_scalar("Loss/aggr_tokens_all_clean_loss", aggr_tokens_all_clean_loss.item(), step)
 
             loss_string = f"Tot: {loss.item():.3f} (lr: {optimizer.param_groups[0]['lr']:.6f}) | " + loss_string
             progress_bar.set_description(loss_string)
@@ -205,10 +258,17 @@ if __name__=="__main__":
                 if writer is not None:
                     writer.add_scalar("Learning_Rate", optimizer.param_groups[0]['lr'], step)
 
+            if save_every > 0 and step % save_every == 0 and rank == 0:
+                model.module.save_lora_weights(os.path.join(weights_dir, f"step_{str(step).zfill(6)}_lora.pth"))
+                print(f"Saved weights at step {step} for epoch {epoch+1}")
+
         if rank == 0:
             model.module.save_lora_weights(os.path.join(weights_dir, f"{str(epoch).zfill(4)}_lora.pth"))
             print(f"Epoch {epoch+1}/{args.num_epochs} | Avg Train Loss: {(train_loss / steps_per_epoch):.3f} ")
             writer.add_scalar("Loss/Train_epoch_avg", (train_loss / steps_per_epoch), epoch)
+        
+
+
 
     if writer is not None:
         writer.close()
