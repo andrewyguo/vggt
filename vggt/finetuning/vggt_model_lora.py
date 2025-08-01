@@ -19,6 +19,7 @@ class LoRAVGGT(VGGT):
         self.replace_aggregator_patch_embed()
         self.replace_aggregator_frame_blocks()
         self.replace_aggregator_global_blocks()
+        self.replace_camera_head()
 
         if mark_lora:
             lora.mark_only_lora_as_trainable(self)
@@ -148,3 +149,40 @@ class LoRAVGGT(VGGT):
                         lora_mlp_fc.bias.data.copy_(mlp_layer.bias.data)
 
                     setattr(self.aggregator.global_blocks[idx].mlp, fc, lora_mlp_fc)
+
+    def replace_camera_head(self):
+        for idx, block in enumerate(self.camera_head.trunk):
+            if hasattr(self.args, "lora_rank_camera_head_qkv") and self.args.lora_rank_camera_head_qkv > 0:
+                lora_qkv = lora.Linear(
+                    block.attn.qkv.in_features, block.attn.qkv.out_features, 
+                    r=self.args.lora_rank_camera_head_qkv, lora_alpha=self.args.lora_alpha_camera_head_qkv
+                )
+                lora_qkv.weight.data.copy_(block.attn.qkv.weight.data)  
+                if block.attn.qkv.bias is not None:
+                    lora_qkv.bias.data.copy_(block.attn.qkv.bias.data)
+
+                setattr(self.camera_head.trunk[idx].attn, "qkv", lora_qkv)
+
+            if hasattr(self.args, "lora_rank_camera_head_proj") and self.args.lora_rank_camera_head_proj > 0:
+                lora_proj = lora.Linear(
+                    block.attn.proj.in_features, block.attn.proj.out_features, 
+                    r=self.args.lora_rank_camera_head_proj, lora_alpha=self.args.lora_alpha_camera_head_proj
+                )
+                lora_proj.weight.data.copy_(block.attn.proj.weight.data)  
+                if block.attn.proj.bias is not None:
+                    lora_proj.bias.data.copy_(block.attn.proj.bias.data)
+
+                setattr(self.camera_head.trunk[idx].attn, "proj", lora_proj)
+
+            if hasattr(self.args, "lora_rank_camera_head_mlp") and self.args.lora_rank_camera_head_mlp > 0:
+                for fc in ["fc1", "fc2"]:
+                    mlp_layer = getattr(block.mlp, fc)
+                    lora_mlp_fc = lora.Linear(
+                        mlp_layer.in_features, mlp_layer.out_features, 
+                        r=self.args.lora_rank_camera_head_mlp, lora_alpha=self.args.lora_alpha_camera_head_mlp
+                    )
+                    lora_mlp_fc.weight.data.copy_(mlp_layer.weight.data)
+                    if mlp_layer.bias is not None:
+                        lora_mlp_fc.bias.data.copy_(mlp_layer.bias.data)
+
+                    setattr(self.camera_head.trunk[idx].mlp, fc, lora_mlp_fc)

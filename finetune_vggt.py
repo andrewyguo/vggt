@@ -33,6 +33,7 @@ if __name__=="__main__":
     # Losses - determines scaling 
     parser.add_argument("--loss_scale_aggregator_tokens", type=float, default=1)
     parser.add_argument("--loss_scale_aggregator_tokens_clean", type=float, default=0.2)
+    parser.add_argument("--loss_scale_camera_head", type=float, default=3)
     # LoRA params 
     ### Aggregator 
     parser.add_argument("--lora_rank_aggr_patch_embed_qkv", type=int, default=16)
@@ -53,7 +54,14 @@ if __name__=="__main__":
     parser.add_argument("--lora_alpha_aggr_global_blocks_proj", type=int, default=16)
     parser.add_argument("--lora_rank_aggr_global_blocks_mlp", type=int, default=16)
     parser.add_argument("--lora_alpha_aggr_global_blocks_mlp", type=int, default=16)
-    ### 
+    ### Camera Head
+    parser.add_argument("--lora_rank_camera_head_qkv", type=int, default=16)
+    parser.add_argument("--lora_alpha_camera_head_qkv", type=int, default=16)
+    parser.add_argument("--lora_rank_camera_head_proj", type=int, default=16)
+    parser.add_argument("--lora_alpha_camera_head_proj", type=int, default=16)
+    parser.add_argument("--lora_rank_camera_head_mlp", type=int, default=16)
+    parser.add_argument("--lora_alpha_camera_head_mlp", type=int, default=16)
+    # 
     parser.add_argument("--scaling_constant_range", type=float, nargs=2, default=(18.0, 20.0))
     parser.add_argument("--manual_scaling_factor", type=float, default=None, help="If provided, use this scaling factor for all sequences.")
     parser.add_argument("--sequence_range", type=int, nargs=2, default=(10, 14))
@@ -179,6 +187,7 @@ if __name__=="__main__":
     # ============================
 
     supervise_clean = any(loss.endswith("_clean") for loss in args.losses)  # Check if any loss requires clean supervision
+    supervise_camera = any(loss.startswith("camera") for loss in args.losses)  # Check if any loss requires camera supervision
 
     for epoch in range(starting_epoch, args.num_epochs):
         model.train()
@@ -200,14 +209,18 @@ if __name__=="__main__":
             #     visualize_npy_sequence(clean_sequence, noisy_sequence, figs_dir, step)
 
 
-            clean_original_aggregated_tokens, _ = original_model.aggregator(clean_sequence)
+            orig_aggregated_tokens, _ = original_model.aggregator(clean_sequence)
             noisy_aggregated_tokens, _ = model.module.aggregator(noisy_sequence)
 
             if supervise_clean: 
                 clean_aggregated_tokens, _ = model.module.aggregator(clean_sequence)
 
+            if supervise_camera:
+                orig_pose_enc = original_model.camera_head(orig_aggregated_tokens)
+                noisy_pose_enc = model.module.camera_head(noisy_aggregated_tokens)
+
             if "aggr_tokens_last" in args.losses:
-                aggr_tokens_last_loss = ((clean_original_aggregated_tokens[-1] - noisy_aggregated_tokens[-1])**2).mean()
+                aggr_tokens_last_loss = ((orig_aggregated_tokens[-1] - noisy_aggregated_tokens[-1])**2).mean()
 
                 aggr_tokens_last_loss *= args.loss_scale_aggregator_tokens
                 loss += aggr_tokens_last_loss
@@ -216,11 +229,21 @@ if __name__=="__main__":
                 if writer is not None:
                     writer.add_scalar("Loss/aggr_tokens_last_loss", aggr_tokens_last_loss.item(), step)
 
+            if "aggr_tokens_last_clean" in args.losses and supervise_clean:
+                aggr_tokens_last_clean_loss = ((clean_aggregated_tokens[-1] - orig_aggregated_tokens[-1])**2).mean()
+                
+                aggr_tokens_last_clean_loss *= args.loss_scale_aggregator_tokens_clean
+                loss += aggr_tokens_last_clean_loss
+
+                loss_string += f"AgTC: {aggr_tokens_last_clean_loss.item():.2f} | "
+                if writer is not None:
+                    writer.add_scalar("Loss/aggr_tokens_last_clean_loss", aggr_tokens_last_clean_loss.item(), step)
+
             if "aggr_tokens_all" in args.losses:
                 aggr_tokens_all_loss = torch.tensor(0.0).to(device)
-                for clean_token, noisy_token in zip(clean_original_aggregated_tokens, noisy_aggregated_tokens):
+                for clean_token, noisy_token in zip(orig_aggregated_tokens, noisy_aggregated_tokens):
                     aggr_tokens_all_loss += ((clean_token - noisy_token)**2).mean()
-                aggr_tokens_all_loss /= len(clean_original_aggregated_tokens)
+                aggr_tokens_all_loss /= len(orig_aggregated_tokens)
 
                 aggr_tokens_all_loss *= args.loss_scale_aggregator_tokens
                 loss += aggr_tokens_all_loss
@@ -231,8 +254,8 @@ if __name__=="__main__":
 
             if "aggr_tokens_all_clean" in args.losses and supervise_clean:
                 aggr_tokens_all_clean_loss = torch.tensor(0.0).to(device)
-                for clean_token, noisy_token in zip(clean_aggregated_tokens, noisy_aggregated_tokens):
-                    aggr_tokens_all_clean_loss += ((clean_token - noisy_token)**2).mean()
+                for clean_token, orig_token in zip(clean_aggregated_tokens, orig_aggregated_tokens):
+                    aggr_tokens_all_clean_loss += ((clean_token - orig_token)**2).mean()
                 aggr_tokens_all_clean_loss /= len(clean_aggregated_tokens)
 
                 aggr_tokens_all_clean_loss *= args.loss_scale_aggregator_tokens_clean
@@ -241,6 +264,16 @@ if __name__=="__main__":
                 loss_string += f"AgAC: {aggr_tokens_all_clean_loss.item():.2f} | "
                 if writer is not None:
                     writer.add_scalar("Loss/aggr_tokens_all_clean_loss", aggr_tokens_all_clean_loss.item(), step)
+
+            if "camera_head_last" in args.losses and supervise_camera:
+                camera_head_loss = ((orig_pose_enc[-1] - noisy_pose_enc[-1])**2).mean()
+
+                camera_head_loss *= args.loss_scale_camera_head
+                loss += camera_head_loss
+
+                loss_string += f"CamL: {camera_head_loss.item():.2f} | "
+                if writer is not None:
+                    writer.add_scalar("Loss/camera_head_last_loss", camera_head_loss.item(), step)
 
             loss_string = f"Tot: {loss.item():.3f} (lr: {optimizer.param_groups[0]['lr']:.6f}) | " + loss_string
             progress_bar.set_description(loss_string)
